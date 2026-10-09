@@ -1,0 +1,14 @@
+{
+  "name": "offscript-creative-talent-platform",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node --check src/index.js && node --check src/pages/app.js && node --check src/assets/demo-data.js && node --check src/components/cards.js && node --check src/components/navigation.js && node --check src/components/notifications.js && node --check src/services/auth.js && node --check src/services/customerStore.js && node --check src/utils/html.js && node --check src/utils/validation.js && node --check src/server.js && node --check tests/auth-api.test.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
