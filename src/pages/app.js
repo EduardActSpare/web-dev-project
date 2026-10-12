@@ -2,7 +2,7 @@ import { images, people, jobs, projects, gear, studios } from "../assets/demo-da
 import { renderHeader as header, renderFooter as footer } from "../components/navigation.js";
 import { jobCard, rentalCard, talentCard, workCard } from "../components/cards.js";
 import { escapeHtml as safe, renderTags as tags } from "../utils/html.js";
-import { currentAdmin, currentUser, getAdminCustomers, getAdminOverview, login, loginAdmin, logout, logoutAdmin, register, updateAdminPassword, updateCustomerPassword, updateCustomerProfile } from "../services/auth.js";
+import { currentAdmin, currentUser, getAdminCustomers, getAdminOverview, getCustomerApplications, login, loginAdmin, logout, logoutAdmin, register, submitJobApplication, updateAdminPassword, updateCustomerPassword, updateCustomerPreferences, updateCustomerProfile } from "../services/auth.js";
 import { toast } from "../components/notifications.js";
 
 const app = document.querySelector("#app");
@@ -20,6 +20,9 @@ let adminDashboardLoading = false;
 let showSignedInNotice = false;
 let showSignOutConfirm = false;
 let googleSignInPending = false;
+let customerApplications = null;
+let customerApplicationsLoading = false;
+let customerApplicationsError = "";
 
 const route = () => location.hash.replace(/^#\/?/, "") || "home";
 const go = (target) => { location.hash = `/${target}`; };
@@ -133,7 +136,7 @@ function profilePage() {
     : profileUser ? "Member profile" : "Available for new projects";
   const accountEmail = profileUser?.email ? ` · ${safe(profileUser.email)}` : "";
   const ratingSummary = reviewCount ? `<span class="star">★</span> ${profileRating} (${reviewCount} reviews)` : "No reviews yet";
-  return `<main class="shell"><div class="profile-cover" style="background-image:linear-gradient(90deg,rgba(15,26,44,.82),rgba(15,26,44,.12)),url('${profileImage}')"></div><section class="profile-summary"><img class="avatar large" src="${profileImage}" alt="${profileName}"><div class="profile-name"><h2 style="font-size:25px;margin:0 0 4px">${profileName} <span class="verified">●</span></h2><div class="small-text muted">${profileRole}${accountEmail} · <span>${accountStatus}</span></div><div class="small-text muted" style="margin-top:5px">${profileLocation} &nbsp; · &nbsp; ${ratingSummary}</div></div><div class="profile-actions">${profileActions}</div></section>
+  return `<main class="shell"><div class="profile-cover" style="background-image:linear-gradient(90deg,rgba(15,26,44,.82),rgba(15,26,44,.12)),url('${profileImage}')"></div><section class="profile-summary"><img class="avatar large" src="${profileImage}" alt="${profileName}"><div class="profile-name"><h2 class="profile-title">${profileName} <span class="verified">●</span></h2><div class="small-text muted">${profileRole}${accountEmail} · <span>${accountStatus}</span></div><div class="small-text muted profile-meta">${profileLocation} &nbsp; · &nbsp; ${ratingSummary}</div></div><div class="profile-actions">${profileActions}</div></section>
     <nav class="profile-tabs" aria-label="Profile sections">${tabs}</nav>
     <div class="profile-columns"><div><section class="panel" id="about"><h3>About</h3><p class="small-text muted" style="line-height:1.8">${profileBio}</p>${quote}</section><section class="panel" id="skills"><h3>Skills</h3>${skills}</section>${services}${portfolio}<section class="panel" id="reviews"><h3>Client reviews</h3><p class="small-text muted">${reviews}</p></section></div>
     <aside>${accountDetails}${profileOverview}${experience}</aside></div>
@@ -142,6 +145,42 @@ function profilePage() {
 
 function accountSignInPrompt(label) {
   return `<main class="shell account-page"><section class="account-signin-card"><div class="eyebrow">Your Offscript account</div><h1>${label}</h1><p class="lede">Sign in to manage your profile and account settings.</p><a class="button" href="#/login">Log in</a><a class="button outline" href="#/register">Create an account</a></section></main>`;
+}
+
+function renderCustomerApplications() {
+  if (customerApplicationsLoading) return `<p class="muted">Loading your applications...</p>`;
+  if (customerApplicationsError) {
+    return `<p class="settings-error" role="alert">${safe(customerApplicationsError)}</p><button type="button" class="button outline small" data-action="retry-applications">Try again</button>`;
+  }
+  if (!customerApplications?.length) return `<p class="muted">You have not applied to any jobs yet. Your submitted applications will appear here.</p>`;
+  return `<div class="customer-applications">${customerApplications.map((application) => `<article class="customer-application"><div><strong>${safe(application.jobTitle)}</strong><span>${safe(application.company)}</span></div><span class="application-status">${safe(application.status)}</span><time datetime="${safe(application.createdAt)}">${safe(new Date(application.createdAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }))}</time></article>`).join("")}</div>`;
+}
+
+function paintCustomerApplications() {
+  const container = document.querySelector(".application-list");
+  if (container) container.innerHTML = renderCustomerApplications();
+}
+
+async function loadCustomerApplications() {
+  if (customerApplicationsLoading || customerApplications !== null) return;
+  const customerId = signedInUser?.id;
+  if (!customerId) return;
+  customerApplicationsLoading = true;
+  customerApplicationsError = "";
+  paintCustomerApplications();
+  try {
+    const applications = await getCustomerApplications();
+    if (signedInUser?.id !== customerId) return;
+    customerApplications = applications;
+  } catch (error) {
+    if (signedInUser?.id !== customerId) return;
+    customerApplicationsError = error.message || "We could not load your applications.";
+  } finally {
+    if (signedInUser?.id === customerId) {
+      customerApplicationsLoading = false;
+      paintCustomerApplications();
+    }
+  }
 }
 
 function ownProfilePage() {
@@ -160,6 +199,7 @@ function ownProfilePage() {
         <a class="account-shortcut" href="#/portfolio"><span class="shortcut-icon">▧</span><strong>Explore the portfolio</strong><span>See creative work from the community.</span></a>
         <a class="account-shortcut" href="#/rentals"><span class="shortcut-icon">⌂</span><strong>Browse resources</strong><span>Find equipment and studio spaces.</span></a>
       </div></article>
+      ${user.role === "professional" ? `<article class="account-card"><div class="account-card-heading"><div><div class="eyebrow">Your job activity</div><h2>Applications</h2></div><a class="account-inline-link" href="#/jobs">Browse jobs</a></div><div class="application-list" aria-live="polite">${renderCustomerApplications()}</div></article>` : ""}
     </section><aside class="account-side-column"><article class="account-card profile-progress-card"><div class="eyebrow">Profile checklist</div><h2>${completion} of 3 details added</h2><div class="profile-progress" role="progressbar" aria-label="Profile completion" aria-valuemin="0" aria-valuemax="3" aria-valuenow="${completion}"><span style="width:${Math.round(completion / 3 * 100)}%"></span></div><ul class="profile-checklist"><li class="complete"><span>✓</span> Name added</li><li class="${user.location ? "complete" : ""}"><span>${user.location ? "✓" : "○"}</span> Add your location</li><li class="${user.bio ? "complete" : ""}"><span>${user.bio ? "✓" : "○"}</span> Write an introduction</li></ul><a class="button small" href="#/settings?section=profile-settings">Complete your profile</a></article><article class="account-card account-details-card"><div class="eyebrow">Account details</div><div class="account-detail-row"><span>Email</span><strong>${safe(user.email)}</strong></div><div class="account-detail-row"><span>Account type</span><strong>${safe(role)}</strong></div><div class="account-detail-row"><span>Member since</span><strong>${new Date(user.createdAt).toLocaleDateString(undefined, { month: "long", year: "numeric" })}</strong></div><a class="account-inline-link" href="#/settings">Manage account settings</a></article></aside></div>
   </main>`;
 }
@@ -168,8 +208,8 @@ function settingsPage() {
   if (!signedInUser) return accountSignInPrompt("Account settings");
   const user = signedInUser;
   return `<main class="shell account-page settings-page">
-    <div class="settings-heading"><div><div class="eyebrow">Your account</div><h1>Settings</h1><p class="lede">Update your profile information and keep your account secure.</p></div><a class="button outline" href="#/profile">Back to profile</a></div>
-    <nav class="settings-nav" aria-label="Settings sections"><a class="${new URLSearchParams(route().split("?")[1] || "").get("section") !== "security-settings" ? "active" : ""}" href="#/settings?section=profile-settings">Profile details</a><a class="${new URLSearchParams(route().split("?")[1] || "").get("section") === "security-settings" ? "active" : ""}" href="#/settings?section=security-settings">Security</a></nav>
+    <div class="settings-heading"><div><div class="eyebrow">Your account</div><h1>Settings</h1><p class="lede">Update your profile information, preferences, and account security.</p></div><a class="button outline" href="#/profile">Back to profile</a></div>
+    <nav class="settings-nav" aria-label="Settings sections"><a class="${new URLSearchParams(route().split("?")[1] || "").get("section") !== "security-settings" && new URLSearchParams(route().split("?")[1] || "").get("section") !== "preferences-settings" ? "active" : ""}" href="#/settings?section=profile-settings">Profile details</a><a class="${new URLSearchParams(route().split("?")[1] || "").get("section") === "security-settings" ? "active" : ""}" href="#/settings?section=security-settings">Security</a><a class="${new URLSearchParams(route().split("?")[1] || "").get("section") === "preferences-settings" ? "active" : ""}" href="#/settings?section=preferences-settings">Preferences</a></nav>
     <section class="settings-card" id="profile-settings"><div class="settings-card-copy"><div class="eyebrow">Public profile</div><h2>Personal information</h2><p>This information helps people understand who you are. Your email address is not publicly displayed.</p></div><form class="settings-profile-form">
       <label class="form-field"><span>Full name</span><input name="name" type="text" required minlength="2" maxlength="80" autocomplete="name" value="${safe(user.name)}"></label>
       <label class="form-field"><span>Email address</span><input type="email" value="${safe(user.email)}" readonly aria-describedby="email-help"><small id="email-help">Email address changes are not available here.</small></label>
@@ -182,6 +222,11 @@ function settingsPage() {
       <label class="form-field"><span>New password</span><div class="password-control"><input name="newPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password" aria-describedby="password-help"><button class="password-toggle" type="button" data-action="toggle-password" aria-label="Show password" aria-pressed="false">Show</button></div><small id="password-help">Use at least 8 characters.</small></label>
       <label class="form-field"><span>Confirm new password</span><input name="confirmPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>
       <p class="settings-error" role="alert" hidden></p><div class="settings-form-actions"><button class="button" type="submit">Update password</button></div>
+    </form></section>
+    <section class="settings-card" id="preferences-settings"><div class="settings-card-copy"><div class="eyebrow">Your experience</div><h2>Privacy and preferences</h2><p>Choose what is remembered on this device and reduce motion across the site. These choices are saved to your account.</p></div><form class="settings-preferences-form">
+      <label class="preference-option"><span><strong>Save recent searches</strong><small>Keep your recent searches on this device to make search suggestions more useful. Search history is stored separately for each account.</small></span><input name="saveSearchHistory" type="checkbox" ${user.preferences?.saveSearchHistory !== false ? "checked" : ""}></label>
+      <label class="preference-option"><span><strong>Reduce animations</strong><small>Turn off most interface motion and transitions while you use Offscript.</small></span><input name="reduceMotion" type="checkbox" ${user.preferences?.reduceMotion ? "checked" : ""}></label>
+      <div class="settings-form-actions"><button class="button" type="submit">Save preferences</button><button class="button ghost" type="button" data-action="clear-search-history">Clear saved searches</button><span class="settings-form-status" role="status"></span></div>
     </form></section>
   </main>`;
 }
@@ -199,10 +244,11 @@ function registerPage() {
 }
 
 function jobDetailsPage() {
-  const index = Number(new URLSearchParams(location.hash.split("?")[1] || "").get("job")) || 3;
+  const requestedIndex = Number(new URLSearchParams(location.hash.split("?")[1] || "").get("job"));
+  const index = Number.isInteger(requestedIndex) && requestedIndex >= 0 && requestedIndex < jobs.length ? requestedIndex : 3;
   const job = jobs[index] || jobs[3];
   return `<main class="shell"><div class="job-detail"><article class="detail-main"><div class="breadcrumb"><a href="#/jobs">Jobs</a> &nbsp;›&nbsp; ${safe(job.category)} &nbsp;›&nbsp; ${safe(job.title)}</div><div class="company-logo">${safe(job.logo)}</div><h1 style="font-size:36px;margin-top:17px">${safe(job.title)}</h1><div class="job-company">${safe(job.company)}</div><div class="summary-line"><span>⌖ ${safe(job.location)}</span><span>◷ ${safe(job.type)}</span><span>${safe(job.salary)}</span><span>Posted ${safe(job.posted)}</span></div><img class="detail-banner" src="${images.work[1]}" alt="Behind the scenes on a creative shoot"><h3>About the position</h3><p>${safe(job.description)} We're looking for a thoughtful collaborator who cares about craft, communicates openly, and wants to make work that matters.</p><h3>Responsibilities</h3><ul><li>Shape and deliver high-quality work in collaboration with creative, brand, and product teams.</li><li>Bring fresh perspectives and thoughtful ideas to every stage of the process.</li><li>Present your work clearly and contribute to a supportive team culture.</li><li>Help evolve our creative toolkit, standards, and workflows.</li></ul><h3>Requirements</h3><ul><li>5+ years of relevant professional experience.</li><li>Strong portfolio showcasing a range of thoughtful work.</li><li>Excellent communication and collaboration skills.</li><li>A curious mind and a detail-oriented approach.</li></ul><h3>Benefits</h3><p>Competitive salary, flexible work policy, professional development budget, generous paid time off, and a creative, supportive team culture.</p></article>
-    <aside class="detail-aside"><h3>Job summary</h3><div class="summary-item"><span>Company</span><strong>${safe(job.company)}</strong></div><div class="summary-item"><span>Location</span><strong>${safe(job.location)}</strong></div><div class="summary-item"><span>Employment type</span><strong>${safe(job.type)}</strong></div><div class="summary-item"><span>Salary</span><strong>${safe(job.salary)}</strong></div><div class="summary-item"><span>Posted</span><strong>${safe(job.posted)}</strong></div><button class="button" data-action="apply">Apply now</button><button class="button outline" data-action="heart">Save job</button></aside></div></main>`;
+    <aside class="detail-aside"><h3>Job summary</h3><div class="summary-item"><span>Company</span><strong>${safe(job.company)}</strong></div><div class="summary-item"><span>Location</span><strong>${safe(job.location)}</strong></div><div class="summary-item"><span>Employment type</span><strong>${safe(job.type)}</strong></div><div class="summary-item"><span>Salary</span><strong>${safe(job.salary)}</strong></div><div class="summary-item"><span>Posted</span><strong>${safe(job.posted)}</strong></div><button class="button" data-action="apply" data-job-index="${index}">Apply now</button><button class="button outline" data-action="heart">Save job</button></aside></div></main>`;
 }
 
 function adminPage() {
@@ -234,6 +280,11 @@ function render() {
   } else {
     window.scrollTo(0, 0);
   }
+  applyAccountPreferences();
+}
+
+function applyAccountPreferences() {
+  document.body.classList.toggle("reduce-motion", Boolean(signedInUser?.preferences?.reduceMotion));
 }
 
 async function establishSession(form) {
@@ -255,6 +306,11 @@ async function establishSession(form) {
         password: fields.get("password"),
         remember: fields.has("remember")
       });
+    customerApplications = null;
+    customerApplicationsLoading = false;
+    customerApplicationsError = "";
+    Object.keys(recentSearches).forEach((key) => delete recentSearches[key]);
+    applyAccountPreferences();
   } catch (error) {
     toast(error.message || "We could not sign you in. Please try again.");
     return;
@@ -280,6 +336,11 @@ async function finishSignOut() {
     return;
   }
   signedInUser = null;
+  customerApplications = null;
+  customerApplicationsLoading = false;
+  customerApplicationsError = "";
+  Object.keys(recentSearches).forEach((key) => delete recentSearches[key]);
+  applyAccountPreferences();
   signedInAdmin = null;
   adminOverview = null;
   adminCustomers = [];
@@ -480,7 +541,7 @@ function filterRentals() {
   bindActionsOnly();
 }
 
-const searchHistoryKey = "offscript.recent-searches.v1";
+const searchHistoryKey = () => `offscript.recent-searches.v1.${signedInUser?.id || "guest"}`;
 const recentSearches = {};
 const searchContexts = {
   "global-search": "global",
@@ -493,7 +554,7 @@ const searchContexts = {
 
 function readSearchHistory() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(searchHistoryKey) || "{}");
+    const parsed = JSON.parse(localStorage.getItem(searchHistoryKey()) || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return recentSearches;
@@ -502,7 +563,7 @@ function readSearchHistory() {
 
 function saveSearch(context, query, destination = context) {
   const cleaned = query.trim();
-  if (!cleaned) return;
+  if (!cleaned || signedInUser?.preferences?.saveSearchHistory === false) return;
   const history = readSearchHistory();
   const previous = Array.isArray(history[context]) ? history[context].filter((item) => typeof item === "string") : [];
   history[context] = [cleaned, ...previous.filter((item) => item.toLowerCase() !== cleaned.toLowerCase())].slice(0, 6);
@@ -514,7 +575,7 @@ function saveSearch(context, query, destination = context) {
   }
   recentSearches[context] = history[context];
   try {
-    localStorage.setItem(searchHistoryKey, JSON.stringify(history));
+    localStorage.setItem(searchHistoryKey(), JSON.stringify(history));
   } catch {
     recentSearches[context] = history[context];
   }
@@ -547,7 +608,7 @@ function suggestionsFor(context, query) {
 
   const unique = [...new Map(candidates.map((item) => [`${item.destination}:${item.label.toLowerCase()}`, item])).values()];
   const history = readSearchHistory();
-  const recent = context === "global"
+  const recent = signedInUser?.preferences?.saveSearchHistory === false ? [] : context === "global"
     ? ["global", "talent", "jobs", "portfolio", "rentals", "home"].flatMap((key) => (Array.isArray(history[key]) ? history[key] : recentSearches[key] || []).filter((item) => typeof item === "string").map((item) => ({ item, key })))
     : (Array.isArray(history[context]) ? history[context] : recentSearches[context] || []).filter((item) => typeof item === "string").map((item) => ({ item, key: context }));
   const relevantRecent = value ? recent.filter(({ item }) => item.toLowerCase().includes(value)) : recent;
@@ -642,7 +703,7 @@ function attachSearchAutocomplete(input) {
   if (input.dataset.autocompleteReady) return;
   input.dataset.autocompleteReady = "true";
   const context = searchContexts[input.id];
-  const wrapper = input.closest(".searchbar, .hero-search");
+  const wrapper = input.closest(".searchbar, .hero-search, .global-searchbar");
   if (!wrapper || !context) return;
   wrapper.classList.add("searchbox");
   const popup = document.createElement("div");
@@ -654,11 +715,35 @@ function attachSearchAutocomplete(input) {
   input.setAttribute("aria-autocomplete", "list");
   input.setAttribute("aria-controls", popup.id);
   input.setAttribute("aria-expanded", "false");
-  wrapper.append(popup);
   let activeIndex = -1;
+  const reposition = () => {
+    if (popup.hidden || !popup.isConnected) return;
+    const rect = input.getBoundingClientRect();
+    const preferredWidth = context === "global" ? 640 : 520;
+    const width = Math.min(Math.max(rect.width, preferredWidth), window.innerWidth - 24);
+    const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
+    const desiredHeight = Math.min(popup.scrollHeight, 420, window.innerHeight - 24);
+    const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - 12);
+    const spaceAbove = Math.max(0, rect.top - 12);
+    popup.style.width = `${width}px`;
+    popup.style.left = `${left}px`;
+    popup.classList.remove("above");
+    if (desiredHeight > spaceBelow && spaceAbove > spaceBelow) {
+      const height = Math.min(desiredHeight, spaceAbove);
+      popup.classList.add("above");
+      popup.style.maxHeight = `${height}px`;
+      popup.style.top = `${Math.max(12, rect.top - height - 8)}px`;
+    } else {
+      popup.style.maxHeight = `${Math.max(1, Math.min(desiredHeight, spaceBelow))}px`;
+      popup.style.top = `${rect.bottom + 8}px`;
+    }
+  };
 
   const close = () => {
     popup.hidden = true;
+    popup.remove();
+    window.removeEventListener("resize", reposition);
+    window.removeEventListener("scroll", reposition, true);
     input.setAttribute("aria-expanded", "false");
     input.removeAttribute("aria-activedescendant");
     activeIndex = -1;
@@ -720,7 +805,7 @@ function attachSearchAutocomplete(input) {
           delete recentSearches[context];
         }
         try {
-          localStorage.setItem(searchHistoryKey, JSON.stringify(history));
+          localStorage.setItem(searchHistoryKey(), JSON.stringify(history));
         } catch {
           delete recentSearches[context];
         }
@@ -729,14 +814,15 @@ function attachSearchAutocomplete(input) {
       popup.append(clear);
     }
     popup.hidden = groups.length === 0;
-    popup.classList.remove("above");
     if (!popup.hidden) {
-      const inputRect = input.getBoundingClientRect();
-      const popupRect = popup.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - inputRect.bottom;
-      if (popupRect.height + 12 > spaceBelow && inputRect.top > spaceBelow) {
-        popup.classList.add("above");
-      }
+      document.body.append(popup);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+      window.addEventListener("resize", reposition);
+      window.addEventListener("scroll", reposition, true);
+      reposition();
+    } else {
+      close();
     }
     input.setAttribute("aria-expanded", String(!popup.hidden));
     activeIndex = -1;
@@ -782,6 +868,15 @@ function closeGlobalSearch() {
   overlay.hidden = true;
   document.body.classList.remove("search-open");
   document.querySelector('[data-action="focus-search"]')?.focus();
+}
+
+function closeAccountMenu(returnFocus = false) {
+  const trigger = document.querySelector(".account-menu-trigger");
+  const menu = document.querySelector("#account-menu");
+  if (!trigger || !menu || menu.hidden) return;
+  menu.hidden = true;
+  trigger.setAttribute("aria-expanded", "false");
+  if (returnFocus) trigger.focus();
 }
 
 function openGlobalSearch() {
@@ -853,6 +948,30 @@ function searchPortfolio() {
 }
 
 function bindActionsOnly() {
+  document.querySelector(".account-menu-trigger")?.addEventListener("click", (event) => {
+    const trigger = event.currentTarget;
+    const menu = document.querySelector("#account-menu");
+    if (!menu) return;
+    const opening = menu.hidden;
+    menu.hidden = !opening;
+    trigger.setAttribute("aria-expanded", String(opening));
+    if (opening) menu.querySelector('[role="menuitem"]')?.focus();
+  });
+  document.querySelector("#account-menu")?.addEventListener("keydown", (event) => {
+    const items = [...event.currentTarget.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+    const currentIndex = items.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(currentIndex + step + items.length) % items.length]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      items[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      items.at(-1)?.focus();
+    }
+  });
   document.querySelectorAll('[data-action="toggle-password"]').forEach((toggle) => {
     if (toggle.dataset.bound) return;
     toggle.dataset.bound = "true";
@@ -965,6 +1084,51 @@ function bindActionsOnly() {
       submit.disabled = false;
     }
   });
+  document.querySelector(".settings-preferences-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector('[type="submit"]');
+    if (submit.disabled) return;
+    submit.disabled = true;
+    const status = form.querySelector(".settings-form-status");
+    if (status) status.textContent = "";
+    const fields = new FormData(form);
+    const preferences = {
+      saveSearchHistory: fields.has("saveSearchHistory"),
+      reduceMotion: fields.has("reduceMotion")
+    };
+    try {
+      signedInUser = await updateCustomerPreferences(preferences);
+      let historyCleared = true;
+      if (!preferences.saveSearchHistory) {
+        try {
+          localStorage.removeItem(searchHistoryKey());
+        } catch {
+          historyCleared = false;
+        }
+        Object.keys(recentSearches).forEach((key) => delete recentSearches[key]);
+      }
+      applyAccountPreferences();
+      render();
+      bindEvents();
+      toast(historyCleared ? "Your preferences have been saved." : "Your preference was saved, but saved searches could not be cleared from this device.");
+    } catch (error) {
+      if (status) status.textContent = error.message || "We could not save your preferences.";
+      else toast(error.message || "We could not save your preferences.");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  document.querySelector('[data-action="clear-search-history"]')?.addEventListener("click", () => {
+    try {
+      localStorage.removeItem(searchHistoryKey());
+    } catch {
+      toast("We could not clear your saved searches from this device.");
+      return;
+    }
+    Object.keys(recentSearches).forEach((key) => delete recentSearches[key]);
+    toast("Your saved searches have been cleared.");
+  });
   document.querySelector(".settings-password-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1007,19 +1171,52 @@ function bindActionsOnly() {
       toast(node.classList.contains("saved") ? "Saved to your collection." : "Removed from your collection.");
     });
   });
+  document.querySelector('[data-action="retry-applications"]')?.addEventListener("click", () => {
+    customerApplications = null;
+    customerApplicationsError = "";
+    loadCustomerApplications();
+  });
+  if (document.querySelector(".application-list") && signedInUser) loadCustomerApplications();
   document.querySelectorAll('[data-action="contact"], [data-action="apply"]').forEach((node) => {
     if (node.dataset.bound) return;
     node.dataset.bound = "true";
-    node.addEventListener("click", () => {
+    node.addEventListener("click", async () => {
       const action = node.dataset.action;
       if (!signedInUser) {
         toast(action === "apply" ? "Sign in to continue with your application." : "Sign in to contact this member.");
         go("login");
         return;
       }
-      toast(action === "apply"
-        ? "Job applications are not available in this preview yet."
-        : "Direct messaging is not available in this preview yet.");
+      if (action === "contact") {
+        toast("Direct messaging is not available yet.");
+        return;
+      }
+      if (signedInUser.role !== "professional") {
+        toast("Only professional accounts can submit job applications.");
+        return;
+      }
+      const index = Number(node.dataset.jobIndex);
+      const job = Number.isInteger(index) ? jobs[index] : null;
+      if (!job) {
+        toast("We could not identify this job listing. Please reload and try again.");
+        return;
+      }
+      node.disabled = true;
+      try {
+        const application = await submitJobApplication({
+          jobId: `demo:${index}`,
+          coverLetter: ""
+        });
+        if (customerApplications !== null) {
+          customerApplications = [application, ...customerApplications];
+          paintCustomerApplications();
+        }
+        toast(`Your application for ${job.title} was submitted.`);
+      } catch (error) {
+        toast(error.message || "We could not submit your application.");
+      } finally {
+        node.disabled = false;
+      }
     });
   });
   document.querySelector('[data-action="menu"]')?.addEventListener("click", (event) => {
@@ -1093,6 +1290,7 @@ mobileFilterBreakpoint.addEventListener("change", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     closeGlobalSearch();
+    closeAccountMenu(true);
     const menuButton = document.querySelector('[data-action="menu"]');
     if (menuButton?.getAttribute("aria-expanded") === "true") {
       document.querySelector("#nav-links")?.classList.remove("open");
@@ -1101,6 +1299,9 @@ document.addEventListener("keydown", (event) => {
       menuButton.focus();
     }
   }
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".account-menu-wrap")) closeAccountMenu();
 });
 
 async function initializeSession() {
@@ -1113,6 +1314,7 @@ async function initializeSession() {
     }
     if (signedInUser) return;
     signedInUser = user;
+    applyAccountPreferences();
     if (googleSignInPending) {
       googleSignInPending = false;
       showSignedInNotice = true;

@@ -9,6 +9,15 @@ const navigationItems = [
 ];
 
 export function renderHeader({ current, user, admin, showSignedInNotice, showSignOutConfirm }) {
+  const accountName = user?.name || admin?.username || "Your account";
+  const accountAvatar = user?.picture
+    ? `<img src="${escapeHtml(user.picture)}" alt="">`
+    : `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.8-3.6 3.1-5.5 7-5.5s6.2 1.9 7 5.5"></path></svg>`;
+  const accountMenu = admin
+    ? `<div class="account-menu-identity"><strong>${escapeHtml(accountName)}</strong><span>Administrator</span></div><a role="menuitem" href="#/admin">Admin dashboard</a><button role="menuitem" type="button" data-action="sign-out">Sign out</button>`
+    : user
+      ? `<div class="account-menu-identity"><strong>${escapeHtml(accountName)}</strong><span>${escapeHtml(user.email || "")}</span></div><a role="menuitem" href="#/profile">My profile</a><a role="menuitem" href="#/settings">Account settings</a><button role="menuitem" type="button" data-action="sign-out">Sign out</button>`
+      : `<div class="account-menu-identity"><strong>Welcome to Offscript</strong><span>Sign in to manage your profile.</span></div><a role="menuitem" href="#/login">Log in</a><a role="menuitem" href="#/register">Create an account</a><a role="menuitem" href="#/admin">Administrator sign in</a>`;
   return `<div class="shell">
     <div class="topline">
       <div class="brand-lockup"><a class="brand" href="#/home">Offscript<span>.</span></a><div class="brand-note">People × Projects × Progress<br><i>A more creative, more human way to work.</i></div></div>
@@ -18,7 +27,7 @@ export function renderHeader({ current, user, admin, showSignedInNotice, showSig
     <nav class="nav" aria-label="Main navigation">
       <a class="nav-brand" href="#/home">Offscript</a>
       <div class="nav-links" id="nav-links">${navigationItems.map(([label, key]) => `<a class="nav-link ${current === key ? "active" : ""}" href="#/${key}">${label}</a>`).join("")}</div>
-      <div class="nav-actions"><button class="icon-button global-search-trigger" aria-label="Search Offscript" title="Search Offscript" data-action="focus-search">⌕</button>${admin ? `<a class="text-link signed-in-name" href="#/admin">${escapeHtml(admin.username)} · Admin</a><button class="button small nav-signout" data-action="sign-out">Sign out</button>` : user ? `<a class="text-link signed-in-name" href="#/profile">${escapeHtml(user.name || "My profile")}</a><a class="text-link nav-settings-link" href="#/settings">Settings</a><button class="button small nav-signout" data-action="sign-out">Sign out</button>` : `<a class="text-link" href="#/login">Log in</a><a class="button small nav-signup" href="#/register">Sign up</a>`}<button class="icon-button mobile-menu" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links" data-action="menu">☰</button></div>
+      <div class="nav-actions"><button class="icon-button global-search-trigger" aria-label="Search Offscript" title="Search Offscript" data-action="focus-search"><svg class="search-glyph" aria-hidden="true" viewBox="0 0 24 24" fill="none"><circle cx="10.8" cy="10.8" r="6.3"></circle><path d="m15.4 15.4 5 5"></path></svg><span class="search-label">Search</span></button><div class="account-menu-wrap"><button class="account-menu-trigger" type="button" aria-label="Open account menu" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu"><span class="account-menu-avatar">${accountAvatar}</span><span class="account-menu-label">Account</span><svg class="account-menu-chevron" aria-hidden="true" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"></path></svg></button><div class="account-menu" id="account-menu" role="menu" aria-label="Account menu" hidden>${accountMenu}</div></div><button class="icon-button mobile-menu" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links" data-action="menu">☰</button></div>
     </nav>
   </div>
   <div class="global-search-overlay" id="global-search-overlay" hidden>

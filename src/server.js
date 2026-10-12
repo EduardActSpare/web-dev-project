@@ -4,8 +4,11 @@ import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { jobs as demoJobs } from "./assets/demo-data.js";
 import {
   closeCustomerStore,
+  createJobListing,
+  createJobApplication,
   createCustomer,
   createAdmin,
   createAdminSession,
@@ -13,21 +16,30 @@ import {
   deleteAdminSession,
   deleteSession,
   findCustomerByEmail,
+  findJobListingById,
   findAdminByUsername,
   findAdminSession,
   findCustomerByGoogleSub,
   findSessionCustomer,
   getAdminOverview,
   listAdminCustomers,
+  listCustomerJobApplications,
+  listEmployerApplications,
+  listEmployerJobListings,
+  listOpenJobListings,
   linkGoogleIdentity,
   removeExpiredAdminSessions,
   removeExpiredSessions,
   toPublicCustomer,
   updateCustomerPassword,
   updateAdminPassword,
-  updateCustomer
+  updateCustomer,
+  updateCustomerPreferences,
+  deleteJobListing,
+  updateEmployerApplicationStatus,
+  updateJobListing
 } from "./services/customerStore.js";
-import { normalizeEmail, validateProfile, validateRegistration } from "./utils/validation.js";
+import { normalizeEmail, validateJobListing, validateProfile, validateRegistration } from "./utils/validation.js";
 
 const scrypt = promisify(scryptCallback);
 const port = Number(process.env.PORT || 3000);
@@ -500,6 +512,96 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, { status: "ok" });
   }
 
+  if (request.method === "GET" && pathname === "/api/jobs") {
+    const limit = Number(url.searchParams.get("limit") || 20);
+    const offset = Number(url.searchParams.get("offset") || 0);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50 || !Number.isInteger(offset) || offset < 0 || offset > 10000) {
+      throw new HttpError(400, "Choose a limit from 1 to 50 and a valid result offset.");
+    }
+    const search = (url.searchParams.get("search") || "").trim().slice(0, 120);
+    const category = (url.searchParams.get("category") || "").trim().slice(0, 60);
+    const location = (url.searchParams.get("location") || "").trim().slice(0, 160);
+    const type = (url.searchParams.get("type") || "").trim();
+    if (type && !["Full-time", "Part-time", "Contract", "Freelance", "Temporary", "Internship"].includes(type)) {
+      throw new HttpError(400, "Choose a valid employment type.");
+    }
+    const results = listOpenJobListings({ search, category, location, type, limit: limit + 1, offset });
+    const hasMore = results.length > limit;
+    return sendJson(response, 200, {
+      jobs: results.slice(0, limit),
+      pagination: { limit, offset, hasMore }
+    });
+  }
+
+  const publicJobMatch = /^\/api\/jobs\/([0-9a-f-]{36})$/.exec(pathname);
+  if (request.method === "GET" && publicJobMatch) {
+    const job = findJobListingById(publicJobMatch[1]);
+    if (!job || job.status !== "open") throw new HttpError(404, "Job listing not found.");
+    return sendJson(response, 200, { job });
+  }
+
+  if (pathname === "/api/employer/jobs" && request.method === "GET") {
+    const employer = requestSessionCustomer(request);
+    if (!employer) throw new HttpError(401, "Sign in to manage your job listings.");
+    if (employer.role !== "employer") throw new HttpError(403, "Only employer accounts can manage job listings.");
+    return sendJson(response, 200, { jobs: listEmployerJobListings(employer.id) });
+  }
+
+  if (pathname === "/api/employer/jobs" && request.method === "POST") {
+    validateSameOrigin(request);
+    const employer = requestSessionCustomer(request);
+    if (!employer) throw new HttpError(401, "Sign in to create a job listing.");
+    if (employer.role !== "employer") throw new HttpError(403, "Only employer accounts can create job listings.");
+    const checked = validateJobListing(await readJson(request));
+    if (checked.error) throw new HttpError(400, checked.error);
+    const now = new Date().toISOString();
+    const job = createJobListing({ id: randomUUID(), employerId: employer.id, listing: checked.value, now });
+    return sendJson(response, 201, { job });
+  }
+
+  const employerJobMatch = /^\/api\/employer\/jobs\/([0-9a-f-]{36})$/.exec(pathname);
+  if (employerJobMatch && ["PATCH", "DELETE"].includes(request.method)) {
+    validateSameOrigin(request);
+    const employer = requestSessionCustomer(request);
+    if (!employer) throw new HttpError(401, "Sign in to manage your job listings.");
+    if (employer.role !== "employer") throw new HttpError(403, "Only employer accounts can manage job listings.");
+    const jobId = employerJobMatch[1];
+    const current = findJobListingById(jobId);
+    if (!current || current.employerId !== employer.id) throw new HttpError(404, "Job listing not found.");
+    if (request.method === "DELETE") {
+      deleteJobListing(jobId, employer.id);
+      return sendEmpty(response);
+    }
+    const checked = validateJobListing(await readJson(request), current);
+    if (checked.error) throw new HttpError(400, checked.error);
+    return sendJson(response, 200, {
+      job: updateJobListing(jobId, employer.id, checked.value, new Date().toISOString())
+    });
+  }
+
+  if (pathname === "/api/employer/applications" && request.method === "GET") {
+    const employer = requestSessionCustomer(request);
+    if (!employer) throw new HttpError(401, "Sign in to view applications for your jobs.");
+    if (employer.role !== "employer") throw new HttpError(403, "Only employer accounts can view job applications.");
+    return sendJson(response, 200, { applications: listEmployerApplications(employer.id) });
+  }
+
+  const employerApplicationMatch = /^\/api\/employer\/applications\/([0-9a-f-]{36})$/.exec(pathname);
+  if (request.method === "PATCH" && employerApplicationMatch) {
+    validateSameOrigin(request);
+    const employer = requestSessionCustomer(request);
+    if (!employer) throw new HttpError(401, "Sign in to update job applications.");
+    if (employer.role !== "employer") throw new HttpError(403, "Only employer accounts can update job applications.");
+    const body = await readJson(request);
+    const status = body.status;
+    if (!["reviewing", "accepted", "declined"].includes(status)) {
+      throw new HttpError(400, "Choose reviewing, accepted, or declined as the application status.");
+    }
+    const application = updateEmployerApplicationStatus(employerApplicationMatch[1], employer.id, status);
+    if (!application) throw new HttpError(404, "Application not found.");
+    return sendJson(response, 200, { application });
+  }
+
   if (request.method === "GET" && pathname === "/api/auth/google") {
     try {
       await beginGoogleSignIn(response);
@@ -649,6 +751,62 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, { user: customer });
   }
 
+  if (pathname === "/api/customers/me/applications" && request.method === "GET") {
+    const customer = requestSessionCustomer(request);
+    if (!customer) throw new HttpError(401, "Sign in to view your job applications.");
+    return sendJson(response, 200, { applications: listCustomerJobApplications(customer.id) });
+  }
+
+  if (pathname === "/api/customers/me/applications" && request.method === "POST") {
+    validateSameOrigin(request);
+    const customer = requestSessionCustomer(request);
+    if (!customer) throw new HttpError(401, "Sign in to apply for jobs.");
+    if (customer.role !== "professional") {
+      throw new HttpError(403, "Only professional accounts can submit job applications.");
+    }
+    const body = await readJson(request);
+    const jobId = typeof body.jobId === "string" ? body.jobId.trim() : "";
+    if (body.coverLetter !== undefined && typeof body.coverLetter !== "string") {
+      throw new HttpError(400, "Enter a valid cover letter.");
+    }
+    const coverLetter = (body.coverLetter || "").trim();
+    const jobMatch = /^demo:(\d+)$/.exec(jobId);
+    const listingMatch = /^listing:([0-9a-f-]{36})$/.exec(jobId);
+    const jobIndex = jobMatch ? Number(jobMatch[1]) : -1;
+    const job = jobMatch && Number.isSafeInteger(jobIndex)
+      ? demoJobs[jobIndex]
+      : listingMatch
+        ? findJobListingById(listingMatch[1])
+        : null;
+    if (!job || (listingMatch && job.status !== "open")) {
+      throw new HttpError(400, "Choose a valid job listing.");
+    }
+    if (coverLetter.length > 3000) {
+      throw new HttpError(400, "Your cover letter must be 3,000 characters or fewer.");
+    }
+    const application = createJobApplication({
+      id: randomUUID(),
+      customerId: customer.id,
+      jobId,
+      jobTitle: job.title,
+      company: job.company,
+      coverLetter,
+      now: new Date().toISOString()
+    });
+    if (!application) throw new HttpError(409, "You have already applied to this job.");
+    return sendJson(response, 201, {
+      application: {
+        id: application.id,
+        jobId: application.job_id,
+        jobTitle: application.job_title,
+        company: application.company,
+        coverLetter: application.cover_letter,
+        status: application.status,
+        createdAt: application.created_at
+      }
+    });
+  }
+
   if (pathname === "/api/customers/me" && request.method === "PATCH") {
     validateSameOrigin(request);
     const customer = requestSessionCustomer(request);
@@ -657,6 +815,22 @@ async function handleApi(request, response, url) {
     if (checked.error) throw new HttpError(400, checked.error);
     return sendJson(response, 200, {
       user: updateCustomer(customer.id, checked.value, new Date().toISOString())
+    });
+  }
+
+  if (pathname === "/api/customers/me/preferences" && request.method === "PATCH") {
+    validateSameOrigin(request);
+    const customer = requestSessionCustomer(request);
+    if (!customer) throw new HttpError(401, "Sign in to update your preferences.");
+    const preferences = await readJson(request);
+    if (!preferences || typeof preferences !== "object" || Array.isArray(preferences)
+      || typeof preferences.saveSearchHistory !== "boolean"
+      || typeof preferences.reduceMotion !== "boolean"
+      || Object.keys(preferences).length !== 2) {
+      throw new HttpError(400, "Choose valid search history and motion preferences.");
+    }
+    return sendJson(response, 200, {
+      user: updateCustomerPreferences(customer.id, preferences, new Date().toISOString())
     });
   }
 

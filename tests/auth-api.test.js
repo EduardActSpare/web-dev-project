@@ -121,6 +121,7 @@ test("customer registration, login, profile persistence, and session security", 
   assert.equal(signup.status, 201);
   assert.equal(signupBody.user.email, "test-customer@example.test");
   assert.equal("password" in signupBody.user, false);
+  assert.deepEqual(signupBody.user.preferences, { saveSearchHistory: true, reduceMotion: false });
   const setCookie = signup.headers.get("set-cookie");
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Lax/);
@@ -140,6 +141,33 @@ test("customer registration, login, profile persistence, and session security", 
 
   const profile = await fetch(`${base}/api/customers/me`, { headers: { Cookie: cookie } });
   assert.equal(profile.status, 200);
+  const emptyApplications = await fetch(`${base}/api/customers/me/applications`, { headers: { Cookie: cookie } });
+  assert.deepEqual((await emptyApplications.json()).applications, []);
+  const apply = await fetch(`${base}/api/customers/me/applications`, {
+    method: "POST",
+    headers: { ...origin, Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jobId: "demo:0",
+      coverLetter: "I would love to bring my product design experience to your team."
+    })
+  });
+  assert.equal(apply.status, 201);
+  const applicationBody = await apply.json();
+  assert.equal(applicationBody.application.jobTitle, "Senior Product Designer");
+  assert.equal(applicationBody.application.company, "Airbnb");
+  assert.equal(applicationBody.application.status, "submitted");
+  const duplicateApplication = await fetch(`${base}/api/customers/me/applications`, {
+    method: "POST",
+    headers: { ...origin, Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ jobId: "demo:0" })
+  });
+  assert.equal(duplicateApplication.status, 409);
+  const invalidJobApplication = await fetch(`${base}/api/customers/me/applications`, {
+    method: "POST",
+    headers: { ...origin, Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ jobId: "demo:900", coverLetter: "" })
+  });
+  assert.equal(invalidJobApplication.status, 400);
   const update = await fetch(`${base}/api/customers/me`, {
     method: "PATCH",
     headers: { ...origin, Cookie: cookie, "Content-Type": "application/json" },
@@ -152,6 +180,20 @@ test("customer registration, login, profile persistence, and session security", 
   assert.equal(update.status, 200);
   assert.equal((await update.json()).user.location, "Toronto");
 
+  const preferences = await fetch(`${base}/api/customers/me/preferences`, {
+    method: "PATCH",
+    headers: { ...origin, Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ saveSearchHistory: false, reduceMotion: true })
+  });
+  assert.equal(preferences.status, 200);
+  assert.deepEqual((await preferences.json()).user.preferences, { saveSearchHistory: false, reduceMotion: true });
+  const invalidPreferences = await fetch(`${base}/api/customers/me/preferences`, {
+    method: "PATCH",
+    headers: { ...origin, Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ saveSearchHistory: "false", reduceMotion: true })
+  });
+  assert.equal(invalidPreferences.status, 400);
+
   const logout = await fetch(`${base}/api/auth/logout`, {
     method: "POST",
     headers: { ...origin, Cookie: cookie }
@@ -159,6 +201,8 @@ test("customer registration, login, profile persistence, and session security", 
   assert.equal(logout.status, 204);
   const unauthorized = await fetch(`${base}/api/customers/me`, { headers: { Cookie: cookie } });
   assert.equal(unauthorized.status, 401);
+  const applicationsUnauthorized = await fetch(`${base}/api/customers/me/applications`, { headers: { Cookie: cookie } });
+  assert.equal(applicationsUnauthorized.status, 401);
 
   const login = await fetch(`${base}/api/auth/login`, {
     method: "POST",
@@ -212,7 +256,14 @@ test("customer registration, login, profile persistence, and session security", 
   child = await startServer(port, dataDirectory);
   const persistedProfile = await fetch(`${base}/api/customers/me`, { headers: { Cookie: loginCookie } });
   assert.equal(persistedProfile.status, 200);
-  assert.equal((await persistedProfile.json()).user.name, "Test Customer Updated");
+  const persistedUser = (await persistedProfile.json()).user;
+  assert.equal(persistedUser.name, "Test Customer Updated");
+  assert.deepEqual(persistedUser.preferences, { saveSearchHistory: false, reduceMotion: true });
+  const persistedApplications = await fetch(`${base}/api/customers/me/applications`, { headers: { Cookie: loginCookie } });
+  const savedApplications = (await persistedApplications.json()).applications;
+  assert.equal(persistedApplications.status, 200);
+  assert.equal(savedApplications.length, 1);
+  assert.equal(savedApplications[0].jobId, "demo:0");
 });
 
 test("admin bootstrap, protected customer data, password change, and logout", { timeout: 30000 }, async (context) => {
@@ -265,6 +316,13 @@ test("admin bootstrap, protected customer data, password change, and logout", { 
     })
   });
   assert.equal(signup.status, 201);
+  const employerCookie = signup.headers.get("set-cookie").match(/offscript_session=[^;]+/)[0];
+  const employerApply = await fetch(`${base}/api/customers/me/applications`, {
+    method: "POST",
+    headers: { ...origin, Cookie: employerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ jobId: "demo:0" })
+  });
+  assert.equal(employerApply.status, 403);
   const overview = await fetch(`${base}/api/admin/overview`, { headers: { Cookie: cookie } });
   assert.deepEqual(await overview.json(), {
     overview: { customers: 1, professionals: 0, employers: 1, owners: 0 }
@@ -303,6 +361,155 @@ test("admin bootstrap, protected customer data, password change, and logout", { 
     body: JSON.stringify({ username: "acttest", password: "a-stronger-test-password" })
   });
   assert.equal(updatedLogin.status, 200);
+});
+
+test("employer job listings, access control, applications, and review workflow", { timeout: 30000 }, async (context) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "offscript-jobs-test-"));
+  const port = await availablePort();
+  const base = `http://127.0.0.1:${port}`;
+  const origin = { Origin: base };
+  let child;
+  context.after(async () => {
+    if (child && child.exitCode === null) await stopServer(child);
+    await rm(dataDirectory, { recursive: true, force: true });
+  });
+  child = await startServer(port, dataDirectory);
+
+  async function registerAccount(name, role) {
+    const response = await fetch(`${base}/api/auth/register`, {
+      method: "POST",
+      headers: { ...origin, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        email: `${name.toLowerCase().replaceAll(" ", ".")}@example.test`,
+        password: randomBytes(24).toString("base64url"),
+        role
+      })
+    });
+    assert.equal(response.status, 201);
+    return response.headers.get("set-cookie").match(/offscript_session=[^;]+/)[0];
+  }
+
+  const employerCookie = await registerAccount("Studio Employer", "employer");
+  const otherEmployerCookie = await registerAccount("Other Employer", "employer");
+  const professionalCookie = await registerAccount("Creative Applicant", "professional");
+
+  const unauthorizedListings = await fetch(`${base}/api/employer/jobs`);
+  assert.equal(unauthorizedListings.status, 401);
+  const forbiddenCreate = await fetch(`${base}/api/employer/jobs`, {
+    method: "POST",
+    headers: { ...origin, Cookie: professionalCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({})
+  });
+  assert.equal(forbiddenCreate.status, 403);
+
+  const listing = await fetch(`${base}/api/employer/jobs`, {
+    method: "POST",
+    headers: { ...origin, Cookie: employerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: "Video Editor",
+      company: "Northstar Studio",
+      category: "Creative",
+      description: "Edit brand and campaign films with our production team.",
+      location: "Remote",
+      type: "Contract",
+      salary: "$70,000 - $90,000",
+      salaryMin: 70000,
+      experience: "Mid-level",
+      tags: ["Premiere Pro", "Storytelling", "Premiere Pro"]
+    })
+  });
+  assert.equal(listing.status, 201);
+  const job = (await listing.json()).job;
+  assert.equal(job.status, "open");
+  assert.deepEqual(job.tags, ["Premiere Pro", "Storytelling"]);
+
+  const invalidListing = await fetch(`${base}/api/employer/jobs`, {
+    method: "POST",
+    headers: { ...origin, Cookie: employerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: "Bad listing",
+      company: "Northstar Studio",
+      category: "Creative",
+      description: "Description",
+      location: "Remote",
+      type: "Invented",
+      tags: []
+    })
+  });
+  assert.equal(invalidListing.status, 400);
+
+  const publicJobs = await fetch(`${base}/api/jobs?search=Northstar&limit=1`);
+  assert.equal(publicJobs.status, 200);
+  const publicJobBody = await publicJobs.json();
+  assert.equal(publicJobBody.jobs[0].id, job.id);
+  assert.equal(publicJobBody.pagination.hasMore, false);
+  const publicDetail = await fetch(`${base}/api/jobs/${job.id}`);
+  assert.equal((await publicDetail.json()).job.title, "Video Editor");
+
+  const apply = await fetch(`${base}/api/customers/me/applications`, {
+    method: "POST",
+    headers: { ...origin, Cookie: professionalCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jobId: `listing:${job.id}`,
+      company: "Client supplied company name",
+      jobTitle: "Client supplied title",
+      coverLetter: "I have several years of editing experience."
+    })
+  });
+  assert.equal(apply.status, 201);
+  const application = (await apply.json()).application;
+  assert.equal(application.company, "Northstar Studio");
+  assert.equal(application.jobTitle, "Video Editor");
+
+  const employerApplications = await fetch(`${base}/api/employer/applications`, { headers: { Cookie: employerCookie } });
+  const receivedApplications = (await employerApplications.json()).applications;
+  assert.equal(receivedApplications.length, 1);
+  assert.equal(receivedApplications[0].applicant.email, "creative.applicant@example.test");
+  const otherEmployerApplications = await fetch(`${base}/api/employer/applications`, { headers: { Cookie: otherEmployerCookie } });
+  assert.deepEqual((await otherEmployerApplications.json()).applications, []);
+
+  const foreignStatusChange = await fetch(`${base}/api/employer/applications/${application.id}`, {
+    method: "PATCH",
+    headers: { ...origin, Cookie: otherEmployerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "accepted" })
+  });
+  assert.equal(foreignStatusChange.status, 404);
+  const reviewed = await fetch(`${base}/api/employer/applications/${application.id}`, {
+    method: "PATCH",
+    headers: { ...origin, Cookie: employerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "reviewing" })
+  });
+  assert.equal((await reviewed.json()).application.status, "reviewing");
+
+  const updatedJob = await fetch(`${base}/api/employer/jobs/${job.id}`, {
+    method: "PATCH",
+    headers: { ...origin, Cookie: employerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "closed" })
+  });
+  assert.equal((await updatedJob.json()).job.status, "closed");
+  assert.equal((await fetch(`${base}/api/jobs/${job.id}`)).status, 404);
+  const closedJobApplication = await fetch(`${base}/api/customers/me/applications`, {
+    method: "POST",
+    headers: { ...origin, Cookie: await registerAccount("Second Applicant", "professional"), "Content-Type": "application/json" },
+    body: JSON.stringify({ jobId: `listing:${job.id}` })
+  });
+  assert.equal(closedJobApplication.status, 400);
+
+  const foreignUpdate = await fetch(`${base}/api/employer/jobs/${job.id}`, {
+    method: "PATCH",
+    headers: { ...origin, Cookie: otherEmployerCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ status: "open" })
+  });
+  assert.equal(foreignUpdate.status, 404);
+  const remove = await fetch(`${base}/api/employer/jobs/${job.id}`, {
+    method: "DELETE",
+    headers: { ...origin, Cookie: employerCookie }
+  });
+  assert.equal(remove.status, 204);
+  assert.deepEqual((await (await fetch(`${base}/api/customers/me/applications`, {
+    headers: { Cookie: professionalCookie }
+  })).json()).applications, []);
 });
 
 test("temporary starter admin cannot be exposed on a non-localhost host", { timeout: 20000 }, async (context) => {

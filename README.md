@@ -54,7 +54,7 @@ Keep the client secret on the server and out of source control. In production, u
 
 Registration stores a name, normalized email address, account type, password hash, and timestamps. Signed-in customers can update their name, location, and short bio on the Profile page. The account endpoints are:
 
-The Profile page is the signed-in account dashboard. Settings lets customers update their name, location, and bio, and change their password. Password changes require the current password, retain the current session, and invalidate the account's other sessions. Email address changes are not currently supported.
+The Profile page is the signed-in account dashboard. Professional accounts can submit one application per open demo or employer-created job; applications are stored per account and appear on the Profile page. Job titles and companies are resolved by the server rather than trusted from the client. Employers can create, update, close, and delete their own job listings, and review applications submitted to those listings. Public listings support search, category, location, and employment-type filters with bounded pagination. Settings lets customers update their name, location, and bio, change their password, and save preferences for recent-search storage and reduced motion. Search history remains in browser storage on the current device and is separated by customer account. Password changes require the current password, retain the current session, and invalidate the account's other sessions. Email address changes are not currently supported.
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
@@ -63,7 +63,18 @@ The Profile page is the signed-in account dashboard. Settings lets customers upd
 - `GET /api/auth/google`
 - `GET /api/auth/google/callback`
 - `GET /api/customers/me`
+- `GET /api/customers/me/applications`
+- `POST /api/customers/me/applications`
+- `GET /api/jobs`
+- `GET /api/jobs/:jobId`
+- `GET /api/employer/jobs`
+- `POST /api/employer/jobs`
+- `PATCH /api/employer/jobs/:jobId`
+- `DELETE /api/employer/jobs/:jobId`
+- `GET /api/employer/applications`
+- `PATCH /api/employer/applications/:applicationId`
 - `PATCH /api/customers/me`
+- `PATCH /api/customers/me/preferences`
 - `POST /api/customers/me/password`
 - `GET /api/admin/session`
 - `POST /api/admin/login`
@@ -82,3 +93,5 @@ npm test
 ```
 
 This is a local prototype backend, not a production deployment. Before accepting real customers, deploy behind HTTPS, configure secure database backups and monitoring, and add operational protections such as persistent distributed rate limiting, email verification, password reset, and a documented privacy policy.
+
+Direct messaging, rental bookings, user-submitted portfolio media, and account email verification and recovery are not implemented in the backend yet.

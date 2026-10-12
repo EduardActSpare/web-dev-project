@@ -89,10 +89,31 @@ export async function updateCustomerProfile(profile) {
   return result.user;
 }
 
+export async function updateCustomerPreferences(preferences) {
+  const result = await request("/api/customers/me/preferences", {
+    method: "PATCH",
+    body: JSON.stringify(preferences)
+  });
+  return result.user;
+}
+
 export async function updateCustomerPassword(credentials) {
   const result = await request("/api/customers/me/password", {
     method: "POST",
     body: JSON.stringify(credentials)
   });
   return result.message;
+}
+
+export async function submitJobApplication(application) {
+  const result = await request("/api/customers/me/applications", {
+    method: "POST",
+    body: JSON.stringify(application)
+  });
+  return result.application;
+}
+
+export async function getCustomerApplications() {
+  const result = await request("/api/customers/me/applications");
+  return result.applications;
 }
